@@ -1,0 +1,4 @@
+openai==1.93.0
+backoff==2.2.1
+wikipedia==1.4.0
+python-telegram-bot==22.3

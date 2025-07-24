@@ -99,14 +99,14 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> str:
     Respond **only** with the number of the chosen option.
     """
 
-    logger.debug("Disambiguating '%s' from options: %s", topic, options)
+    logger.info("Disambiguating '%s' from options: %s", topic, options)
     oai_response = client.responses.create(
         model="gpt-4.1-nano-2025-04-14",
         temperature=0.1,
         instructions=dev_prompt,
         input=f"User query: {topic}",
     )
-    logger.debug("OpenAI response: %s", oai_response)
+    logger.info("OpenAI response: %s", oai_response)
     response_words = oai_response.output_text.strip().split()
     assert response_words, "OpenAI response cannot be empty"
     chosen_option = options[int(response_words[0])]
@@ -146,7 +146,7 @@ def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:
         "pithumbsize": THUMB_SIZE,
     }
     try:
-        logger.debug("Requesting thumbnail for '%s'", page.title)
+        logger.info("Requesting thumbnail for '%s'", page.title)
         resp = requests.get(api_url, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
@@ -158,9 +158,9 @@ def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:
     for _, info in pages.items():
         thumb = info.get("thumbnail", {}).get("source")
         if thumb:
-            logger.debug("Thumbnail found: %s", thumb)
+            logger.info("Thumbnail found: %s", thumb)
             return thumb
-    logger.debug("No thumbnail for '%s'", page.title)
+    logger.info("No thumbnail for '%s'", page.title)
     return None
 
 

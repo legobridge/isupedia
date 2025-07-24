@@ -38,7 +38,7 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MAX_TOPIC_LEN: int = 25
+MAX_TOPIC_LEN: int = 35
 MAX_SUMMARY_LEN: int = 1_000
 THUMB_SIZE: int = 500
 OPENAI_MODEL: str = "gpt-4.1-nano-2025-04-14"
@@ -85,31 +85,36 @@ def get_page_summaries_concurrently(options: List[str], max_len: int = 50) -> li
     (AssertionError, ValueError, openai.APIError),
     max_tries=3,
 )
-def disambiguate_using_gpt(topic: str, options: List[str]) -> str:
-    """Ask GPT‑4.1-nano to pick the best Wikipedia page title from *options*."""
+def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
+    """Ask GPT to pick the best Wikipedia page title from *options*."""
     assert options, "The list of options must have at least one option"
 
     option_summaries = get_page_summaries_concurrently(options, max_len=200)
 
-    options_str = "\n".join(f"{i}: {opt} - {opt_sum}" for i, (opt, opt_sum) in enumerate(zip(options, option_summaries)))
+    options_str = "\n".join(f"{i}: '{opt}' - {opt_sum}" for i, (opt, opt_sum) in enumerate(zip(options, option_summaries)))
     dev_prompt = f"""
     You are an assistant that selects the single most relevant Wikipedia page title for a user query from the following list:
     {options_str} 
-        
-    Respond **only** with the number of the chosen option.
+    -999: No good match
+    
+    Respond **only** with the number. Either the chosen option, or -999 if none of the options are a good match for the user query.
     """
 
     logger.info("Disambiguating '%s' from options: %s", topic, options)
     oai_response = client.responses.create(
-        model="gpt-4.1-nano-2025-04-14",
+        model=OPENAI_MODEL,
         temperature=0.1,
         instructions=dev_prompt,
-        input=f"User query: {topic}",
+        input=f"Which number is most relevant for the user query '{topic}'? If none of the options are a good match, output -999.",
     )
     logger.info("OpenAI response: %s", oai_response)
     response_words = oai_response.output_text.strip().split()
     assert response_words, "OpenAI response cannot be empty"
-    chosen_option = options[int(response_words[0])]
+    choice = int(response_words[0])
+    if choice == -999:
+        logger.warning("None of the options are a good match.")
+        return None
+    chosen_option = options[choice]
     logger.info(
         "GPT‑4/Disambiguation selected '%s' for query '%s'", chosen_option, topic
     )
@@ -124,7 +129,9 @@ def get_wiki_page(topic: str) -> Optional[wikipedia.WikipediaPage]:
     except wikipedia.DisambiguationError as exc:
         logger.info("DisambiguationError for '%s': %s", topic, exc.options[:10])
         title = disambiguate_using_gpt(topic, exc.options[:10])
-        return wikipedia.page(title, auto_suggest=False, redirect=True)
+        if title is not None:
+            return wikipedia.page(title, auto_suggest=False, redirect=True)
+        return None
     except wikipedia.PageError:
         logger.info("PageError for '%s'; falling back to wikipedia.search", topic)
         search_results = wikipedia.search(topic)
@@ -132,7 +139,9 @@ def get_wiki_page(topic: str) -> Optional[wikipedia.WikipediaPage]:
             logger.error("No search results for '%s'", topic)
             return None
         title = disambiguate_using_gpt(topic, search_results)
-        return wikipedia.page(title, auto_suggest=False, redirect=True)
+        if title is not None:
+            return wikipedia.page(title, auto_suggest=False, redirect=True)
+        return None
 
 
 def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:

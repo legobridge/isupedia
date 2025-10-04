@@ -42,9 +42,8 @@ MAX_TOPIC_LEN: int = 35
 MAX_SUMMARY_LEN: int = 1_000
 THUMB_SIZE: int = 500
 OPENAI_MODEL: str = "gpt-4.1-nano-2025-04-14"
+HEADERS = {"User-Agent": "IsupediaBot/1.0"}
 
-# ---------------------------------------------------------------------------
-# Telegram command handlers
 # ---------------------------------------------------------------------------
 
 
@@ -56,13 +55,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Hello, I'm Ishanopedia II! What can I do you for?")
 
 
-def get_page_summaries_concurrently(options: List[str], max_len: int = 50) -> list[Optional[str]]:
+def get_page_summaries_concurrently(
+    options: List[str], max_len: int = 50
+) -> list[Optional[str]]:
     def fetch_summary(title):
         try:
             page = wikipedia.page(title, auto_suggest=False, redirect=True)
             return trim_summary(page.summary, max_len=max_len)
         except Exception:
             return None
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {executor.submit(fetch_summary, title): title for title in options}
         summaries = []
@@ -91,7 +93,10 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
 
     option_summaries = get_page_summaries_concurrently(options, max_len=200)
 
-    options_str = "\n".join(f"{i}: '{opt}' - {opt_sum}" for i, (opt, opt_sum) in enumerate(zip(options, option_summaries)))
+    options_str = "\n".join(
+        f"{i}: '{opt}' - {opt_sum}"
+        for i, (opt, opt_sum) in enumerate(zip(options, option_summaries))
+    )
     dev_prompt = f"""
     You are an assistant that selects the single most relevant Wikipedia page title for a user query from the following list:
     {options_str} 
@@ -154,12 +159,9 @@ def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:
         "format": "json",
         "pithumbsize": THUMB_SIZE,
     }
-    headers = {
-        "User-Agent": "IsupediaBot/1.0"
-    }
     try:
         logger.info("Requesting thumbnail for '%s'", page.title)
-        resp = requests.get(api_url, params=params, headers=headers, timeout=10)
+        resp = requests.get(api_url, params=params, headers=HEADERS, timeout=10)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException:
@@ -181,6 +183,36 @@ def trim_summary(summary: str, max_len: int = MAX_SUMMARY_LEN) -> str:
     clipped = summary[:max_len]
     match = re.match(r"^(.*[.!?])", clipped, re.DOTALL)
     return match.group(1) if match else clipped
+
+
+def shorten_wikipedia_url(long_url: str) -> str | None:
+    """
+    Convert a Wikipedia URL to a short w.wiki link.
+
+    Args:
+        long_url (str): The full Wikipedia URL to shorten
+
+    Returns:
+        str: The shortened w.wiki URL, or None if failed
+    """
+    api_url = "https://meta.wikimedia.org/w/api.php"
+
+    params = {"action": "shortenurl", "format": "json", "url": long_url}
+
+    try:
+        response = requests.post(api_url, data=params, headers=HEADERS)
+        response.raise_for_status()
+        data = response.json()
+
+        if "shortenurl" in data and "shorturl" in data["shortenurl"]:
+            return data["shortenurl"]["shorturl"]
+        else:
+            print(f"Error: {data}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+        return None
 
 
 async def get_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -213,6 +245,10 @@ async def get_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     thumbnail_url = get_thumbnail(page)
     summary = trim_summary(page.summary)
+
+    shortened_url = shorten_wikipedia_url(page.url)
+    if shortened_url is not None:
+        summary += f"\n{shortened_url}"
 
     if thumbnail_url:
         logger.info("Sending photo response for '%s'", page.title)

@@ -154,9 +154,12 @@ def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:
         "format": "json",
         "pithumbsize": THUMB_SIZE,
     }
+    headers = {
+        "User-Agent": "IsupediaBot/1.0"
+    }
     try:
         logger.info("Requesting thumbnail for '%s'", page.title)
-        resp = requests.get(api_url, params=params, timeout=10)
+        resp = requests.get(api_url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException:

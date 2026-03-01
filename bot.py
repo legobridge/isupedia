@@ -8,7 +8,7 @@ import backoff
 import openai
 import requests
 import wikipedia
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -38,10 +38,10 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY)
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-MAX_TOPIC_LEN: int = 35
+MAX_TOPIC_LEN: int = 50
 MAX_SUMMARY_LEN: int = 1_000
 THUMB_SIZE: int = 500
-OPENAI_MODEL: str = "gpt-4.1-nano-2025-04-14"
+OPENAI_MODEL: str = "gpt-5-mini"
 HEADERS = {"User-Agent": "IsupediaBot/1.0"}
 
 # ---------------------------------------------------------------------------
@@ -98,19 +98,20 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
         for i, (opt, opt_sum) in enumerate(zip(options, option_summaries))
     )
     dev_prompt = f"""
-    You are an assistant that selects the single most relevant Wikipedia page title for a user query from the following list:
+    You are an assistant that selects the single most relevant Wikipedia page title for a user query from the numbered list at the end. 
+    
+    Respond **only** with the number. Either the chosen option, or -999 if none of the options seem relevant to the user query.
+
     {options_str} 
     -999: No good match
-    
-    Respond **only** with the number. Either the chosen option, or -999 if none of the options are a good match for the user query.
     """
 
     logger.info("Disambiguating '%s' from options: %s", topic, options)
     oai_response = client.responses.create(
         model=OPENAI_MODEL,
-        temperature=0.1,
         instructions=dev_prompt,
         input=f"Which number is most relevant for the user query '{topic}'? If none of the options are a good match, output -999.",
+        reasoning={"effort": "minimal"}
     )
     logger.info("OpenAI response: %s", oai_response)
     response_words = oai_response.output_text.strip().split()
@@ -121,7 +122,7 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
         return None
     chosen_option = options[choice]
     logger.info(
-        "GPT‑4/Disambiguation selected '%s' for query '%s'", chosen_option, topic
+        "Disambiguation selected '%s' for query '%s'", chosen_option, topic
     )
     return chosen_option
 
@@ -132,21 +133,19 @@ def get_wiki_page(topic: str) -> Optional[wikipedia.WikipediaPage]:
         logger.info("Fetching Wikipedia page for '%s' (direct)", topic)
         return wikipedia.page(topic, auto_suggest=False, redirect=True)
     except wikipedia.DisambiguationError as exc:
-        logger.info("DisambiguationError for '%s': %s", topic, exc.options[:10])
-        title = disambiguate_using_gpt(topic, exc.options[:10])
-        if title is not None:
-            return wikipedia.page(title, auto_suggest=False, redirect=True)
-        return None
+        logger.info("DisambiguationError for '%s': %s", topic, exc.options)
+        candidates = exc.options
     except wikipedia.PageError:
         logger.info("PageError for '%s'; falling back to wikipedia.search", topic)
-        search_results = wikipedia.search(topic)
-        if not search_results:
-            logger.error("No search results for '%s'", topic)
-            return None
-        title = disambiguate_using_gpt(topic, search_results)
-        if title is not None:
-            return wikipedia.page(title, auto_suggest=False, redirect=True)
+        candidates = wikipedia.search(topic)
+
+    if not candidates:
+        logger.error("No candidates for '%s'", topic)
         return None
+    title = disambiguate_using_gpt(topic, candidates)
+    if title is None:
+        return None
+    return wikipedia.page(title, auto_suggest=False, redirect=True)
 
 
 def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:
@@ -185,36 +184,6 @@ def trim_summary(summary: str, max_len: int = MAX_SUMMARY_LEN) -> str:
     return match.group(1) if match else clipped
 
 
-def shorten_wikipedia_url(long_url: str) -> str | None:
-    """
-    Convert a Wikipedia URL to a short w.wiki link.
-
-    Args:
-        long_url (str): The full Wikipedia URL to shorten
-
-    Returns:
-        str: The shortened w.wiki URL, or None if failed
-    """
-    api_url = "https://meta.wikimedia.org/w/api.php"
-
-    params = {"action": "shortenurl", "format": "json", "url": long_url}
-
-    try:
-        response = requests.post(api_url, data=params, headers=HEADERS)
-        response.raise_for_status()
-        data = response.json()
-
-        if "shortenurl" in data and "shorturl" in data["shortenurl"]:
-            return data["shortenurl"]["shorturl"]
-        else:
-            print(f"Error: {data}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Request failed: {e}")
-        return None
-
-
 async def get_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/isu command handler."""
     assert update.message is not None
@@ -245,17 +214,16 @@ async def get_wiki(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     thumbnail_url = get_thumbnail(page)
     summary = trim_summary(page.summary)
-
-    shortened_url = shorten_wikipedia_url(page.url)
-    if shortened_url is not None:
-        summary += f"\n{shortened_url}"
+    markup = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Full Article", url=page.url)
+    ]])
 
     if thumbnail_url:
         logger.info("Sending photo response for '%s'", page.title)
-        await update.message.reply_photo(thumbnail_url, caption=summary)
+        await update.message.reply_photo(thumbnail_url, caption=summary, reply_markup=markup)
     else:
         logger.info("Sending text response for '%s'", page.title)
-        await update.message.reply_text(summary)
+        await update.message.reply_text(summary, reply_markup=markup)
 
 
 # ---------------------------------------------------------------------------

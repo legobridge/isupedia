@@ -3,6 +3,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List
+from urllib.parse import unquote, urlparse
 
 import backoff
 import openai
@@ -52,7 +53,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     assert update.message is not None
     assert update.effective_user is not None
     logger.info("/start invoked by user_id=%s", update.effective_user.id)
-    await update.message.reply_text("Hello, I'm Ishanopedia II! What can I do you for?")
+    await update.message.reply_text("Hello, I'm Ishanopedia II! What can I do you for?")
 
 
 def get_page_summaries_concurrently(
@@ -89,6 +90,9 @@ def get_page_summaries_concurrently(
 )
 def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
     """Ask GPT to pick the best Wikipedia page title from *options*."""
+
+    options = [o for o in options if "(disambiguation)" not in o]
+
     assert options, "The list of options must have at least one option"
 
     option_summaries = get_page_summaries_concurrently(options, max_len=200)
@@ -98,7 +102,7 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
         for i, (opt, opt_sum) in enumerate(zip(options, option_summaries))
     )
     dev_prompt = f"""
-    You are an assistant that selects the single most relevant Wikipedia page title for a user query from the numbered list at the end. 
+    You are an assistant that selects the single most relevant Wikipedia page title for a user query from the numbered list at the end. Use your knowledge to determine which of the pages might be most relevant to the user's query.
     
     Respond **only** with the number. Either the chosen option, or -999 if none of the options seem relevant to the user query.
 
@@ -111,7 +115,7 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
         model=OPENAI_MODEL,
         instructions=dev_prompt,
         input=f"Which number is most relevant for the user query '{topic}'? If none of the options are a good match, output -999.",
-        reasoning={"effort": "minimal"}
+        reasoning={"effort": "low"}
     )
     logger.info("OpenAI response: %s", oai_response)
     response_words = oai_response.output_text.strip().split()
@@ -127,6 +131,32 @@ def disambiguate_using_gpt(topic: str, options: List[str]) -> Optional[str]:
     return chosen_option
 
 
+def search_wikipedia_via_openai(topic: str) -> Optional[str]:
+    """Use OpenAI web search to find a Wikipedia page title for *topic*."""
+    logger.info("Web search fallback for '%s'", topic)
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        tools=[{
+            "type": "web_search",
+            "filters": {"allowed_domains": ["en.wikipedia.org"]},
+        }],
+        input=f"Find the most relevant English Wikipedia article for: {topic}",
+    )
+    logger.info(f"Web search usage: {response.usage}")
+    for item in response.output:
+        if item.type == "message":
+            for content in item.content:
+                for ann in getattr(content, "annotations", []):
+                    url = getattr(ann, "url", "")
+                    if "en.wikipedia.org/wiki/" in url:
+                        path = urlparse(url).path
+                        title = unquote(path.split("/wiki/")[-1]).replace("_", " ")
+                        logger.info("Web search found title: '%s'", title)
+                        return title
+    logger.warning("Web search found no Wikipedia URL for '%s'", topic)
+    return None
+
+
 def get_wiki_page(topic: str) -> Optional[wikipedia.WikipediaPage]:
     """Return a WikipediaPage, resolving disambiguation or returning *None*."""
     try:
@@ -139,13 +169,15 @@ def get_wiki_page(topic: str) -> Optional[wikipedia.WikipediaPage]:
         logger.info("PageError for '%s'; falling back to wikipedia.search", topic)
         candidates = wikipedia.search(topic)
 
-    if not candidates:
-        logger.error("No candidates for '%s'", topic)
-        return None
-    title = disambiguate_using_gpt(topic, candidates)
-    if title is None:
-        return None
-    return wikipedia.page(title, auto_suggest=False, redirect=True)
+    if candidates:
+        title = disambiguate_using_gpt(topic, candidates)
+        if title is not None:
+            return wikipedia.page(title, auto_suggest=False, redirect=True)
+
+    title = search_wikipedia_via_openai(topic)
+    if title is not None:
+        return wikipedia.page(title, auto_suggest=False, redirect=True)
+    return None
 
 
 def get_thumbnail(page: wikipedia.WikipediaPage) -> Optional[str]:

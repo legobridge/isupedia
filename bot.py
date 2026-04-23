@@ -45,6 +45,8 @@ THUMB_SIZE: int = 500
 OPENAI_MODEL: str = "gpt-5-mini"
 HEADERS = {"User-Agent": "IsupediaBot/1.0"}
 
+wikipedia.set_user_agent("IsupediaBot/1.0")
+
 # ---------------------------------------------------------------------------
 
 

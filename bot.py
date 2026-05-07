@@ -9,6 +9,7 @@ import backoff
 import openai
 import requests
 import wikipedia
+import wikipedia.wikipedia as _wiki_mod
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -46,6 +47,24 @@ OPENAI_MODEL: str = "gpt-5-mini"
 HEADERS = {"User-Agent": "IsupediaBot/1.0"}
 
 wikipedia.set_user_agent("IsupediaBot/1.0")
+
+
+def _logged_wiki_request(params):
+    params["format"] = "json"
+    if "action" not in params:
+        params["action"] = "query"
+    headers = {"User-Agent": _wiki_mod.USER_AGENT}
+    r = requests.get(_wiki_mod.API_URL, params=params, headers=headers)
+    try:
+        return r.json()
+    except requests.exceptions.JSONDecodeError:
+        logger.error(
+            "Wiki API non-JSON response: status=%s url=%s body=%r",
+            r.status_code, r.url, r.text[:500],
+        )
+        raise
+
+_wiki_mod._wiki_request = _logged_wiki_request
 
 # ---------------------------------------------------------------------------
 

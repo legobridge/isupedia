@@ -44,11 +44,17 @@ MAX_TOPIC_LEN: int = 50
 MAX_SUMMARY_LEN: int = 1_000
 THUMB_SIZE: int = 500
 OPENAI_MODEL: str = "gpt-5-mini"
-HEADERS = {"User-Agent": "IsupediaBot/1.0"}
+USER_AGENT = "IsupediaBot/1.0 (kushal.agrawal@u.northwestern.edu)"
+HEADERS = {"User-Agent": USER_AGENT}
 
-wikipedia.set_user_agent("IsupediaBot/1.0")
+wikipedia.set_user_agent(USER_AGENT)
 
 
+@backoff.on_exception(
+    backoff.expo,
+    (requests.exceptions.JSONDecodeError,),
+    max_tries=3,
+)
 def _logged_wiki_request(params):
     params["format"] = "json"
     if "action" not in params:
@@ -87,7 +93,7 @@ def get_page_summaries_concurrently(
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(fetch_summary, title): title for title in options}
         summaries = []
         for future in as_completed(futures):
